@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Barcode Scanner</title>
+<style>
+video { width: 100%; max-width: 400px; }
+</style>
+</head>
+<body>
+<h2>バーコードスキャナ</h2>
+<video id="camera" autoplay playsinline></video>
+<p>スキャン結果: <span id="result"></span></p>
+
+<script src="https://unpkg.com/@zxing/library@latest"></script>
+<script>
+const codeReader = new ZXing.BrowserMultiFormatReader();
+codeReader.decodeFromVideoDevice(null, 'camera', (result, err) => {
+  if (result) {
+    document.getElementById('result').textContent = result.text;
+
+    // PowerApps (iframe親) に結果を送信
+    window.parent.postMessage({ barcode: result.text }, "*");
+  }
+});
+</script>
+</body>
+</html>
+
