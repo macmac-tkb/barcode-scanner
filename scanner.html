@@ -14,29 +14,38 @@
     max-width: 400px;
     border: 2px solid #333;
     border-radius: 8px;
+    margin-bottom: 10px;
   }
   h2 {
     color: #444;
+  }
+  #result {
+    font-weight: bold;
+    color: #0078D7;
   }
 </style>
 </head>
 <body>
 <h2>バーコードスキャナ</h2>
 <video id="camera" autoplay playsinline></video>
-<p>スキャン結果: <span id="result"></span></p>
+<p>スキャン結果: <span id="result">読み取り中...</span></p>
 
 <script src="https://unpkg.com/@zxing/library@latest"></script>
 <script>
 const codeReader = new ZXing.BrowserMultiFormatReader();
+
+// カメラ起動とバーコード解析
 codeReader.decodeFromVideoDevice(null, 'camera', (result, err) => {
     if (result) {
         document.getElementById('result').textContent = result.text;
 
-        // ✅ Power Apps本番URL（Barcodeパラメータを追加）
-        const powerAppsUrl = "https://apps.powerapps.com/play/e/default-5c21876a-fce9-422b-a2f6-cab1ffba2f8e/a/d8c0aa93-0fec-467f-bec1-ba4d59f44e95?tenantId=d8c0aa93-0fec-467f-bec1-ba4d59f44e95&Barcode=" + encodeURIComponent(result.text);
+        // ✅ Power Apps本番URL（新AppID使用）
+        const powerAppsUrl = "https://apps.powerapps.com/play/e/default-5c21876a-fce9-422b-a2f6-cab1ffba2f8e/a/611dff68-2994-4792-83e9-0abd5ec0f146?tenantId=5c21876a-fce9-422b-a2f6-cab1ffba2f8e&Barcode=" + encodeURIComponent(result.text);
 
         // ✅ 読み取り後にPower Apps本番アプリを開く
-        window.location.href = powerAppsUrl;
+        setTimeout(() => {
+            window.location.href = powerAppsUrl;
+        }, 3000); // 3秒待機で結果確認しやすい
     }
 });
 </script>
