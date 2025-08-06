@@ -4,7 +4,20 @@
 <meta charset="UTF-8">
 <title>Barcode Scanner</title>
 <style>
-  video { width: 100%; max-width: 400px; }
+  body {
+    font-family: Arial, sans-serif;
+    text-align: center;
+    padding: 20px;
+  }
+  video {
+    width: 100%;
+    max-width: 400px;
+    border: 2px solid #333;
+    border-radius: 8px;
+  }
+  h2 {
+    color: #444;
+  }
 </style>
 </head>
 <body>
@@ -19,17 +32,16 @@ codeReader.decodeFromVideoDevice(null, 'camera', (result, err) => {
     if (result) {
         document.getElementById('result').textContent = result.text;
 
-        // Power AppsのURL（リダイレクト時にBarcodeパラメータを追加）
-        const powerAppsUrl = https://apps.powerapps.com/play/e/default-5c21876a-fce9-422b-a2f6-cab1ffba2f8e/a/611dff68-2994-4792-83e9-0abd5ec0f146?tenantId=5c21876a-fce9-422b-a2f6-cab1ffba2f8e&hint=3de0c45b-f24d-40e5-a69a-42a9d090b619&Barcode=" + encodeURIComponent(result.text);
+        // ✅ Power Apps本番URL（Barcodeパラメータを追加）
+        const powerAppsUrl = "https://apps.powerapps.com/play/e/default-5c21876a-fce9-422b-a2f6-cab1ffba2f8e/a/d8c0aa93-0fec-467f-bec1-ba4d59f44e95?tenantId=5c21876a-fce9-422b-a2f6-cab1ffba2f8e&Barcode=" + encodeURIComponent(result.text);
 
-        // Power Appsに遷移
+        // ✅ 読み取り後にPower Apps本番アプリを開く
         window.location.href = powerAppsUrl;
     }
 });
 </script>
 </body>
 </html>
-
 
 
 
