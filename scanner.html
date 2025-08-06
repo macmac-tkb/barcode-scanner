@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <title>Barcode Scanner</title>
 <style>
-video { width: 100%; max-width: 400px; }
+  video { width: 100%; max-width: 400px; }
 </style>
 </head>
 <body>
@@ -16,12 +16,13 @@ video { width: 100%; max-width: 400px; }
 <script>
 const codeReader = new ZXing.BrowserMultiFormatReader();
 codeReader.decodeFromVideoDevice(null, 'camera', (result, err) => {
-  if (result) {
-    document.getElementById('result').textContent = result.text;
+    if (result) {
+        document.getElementById('result').textContent = result.text;
 
-    // PowerApps (iframe親) に結果を送信
-    window.parent.postMessage({ barcode: result.text }, "*");
-  }
+        // Power Appsへ値渡し（URLパラメータでリダイレクト）
+        const powerAppsUrl = "https://apps.powerapps.com/play/appid?Barcode=" + encodeURIComponent(result.text);
+        window.location.href = powerAppsUrl;
+    }
 });
 </script>
 </body>
