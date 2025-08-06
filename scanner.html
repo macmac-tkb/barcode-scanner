@@ -19,12 +19,16 @@ codeReader.decodeFromVideoDevice(null, 'camera', (result, err) => {
     if (result) {
         document.getElementById('result').textContent = result.text;
 
-        // Power Appsへ値渡し（URLパラメータでリダイレクト）
-        const powerAppsUrl = "https://apps.powerapps.com/play/appid?Barcode=" + encodeURIComponent(result.text);
+        // Power AppsのURL（リダイレクト時にBarcodeパラメータを追加）
+        const powerAppsUrl = "https://apps.powerapps.com/play/e/default-5c21876a-fce9-422b-a2f6-cab1ffba2f8e/a/d8c0aa93-0fec-467f-bec1-ba4d59f44e95?tenantId=5c21876a-fce9-422b-a2f6-cab1ffba2f8e&Barcode=" + encodeURIComponent(result.text);
+
+        // Power Appsに遷移
         window.location.href = powerAppsUrl;
     }
 });
 </script>
 </body>
 </html>
+
+
 
