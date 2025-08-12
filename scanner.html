@@ -1,54 +1,170 @@
 <!DOCTYPE html>
-<html>
+<html lang="ja">
 <head>
-<meta charset="UTF-8">
-<title>Barcode Scanner</title>
+<meta charset="UTF-8" />
+<title>Barcode Scanner (2種QR＋名前表示 CSV対応)</title>
 <style>
-  body {
-    font-family: Arial, sans-serif;
-    text-align: center;
-    padding: 20px;
-  }
-  video {
-    width: 100%;
-    max-width: 400px;
-    border: 2px solid #333;
-    border-radius: 8px;
-    margin-bottom: 10px;
-  }
-  h2 {
-    color: #444;
-  }
-  #result {
-    font-weight: bold;
-    color: #0078D7;
-  }
+  body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }
+  video { width: 100%; max-width: 420px; border: 2px solid #333; border-radius: 8px; margin-bottom: 10px; }
+  h2 { color: #444; }
+  .row { margin: 8px 0; font-size: 1.05rem; }
+  .label { color: #555; display: inline-block; min-width: 7em; text-align: right; margin-right: .5em; }
+  .value { font-weight: bold; color: #0078D7; word-break: break-all; }
+  .hint { font-size: .9rem; color: #666; margin-top: 8px; }
+  .ok { color: #0a8a0a; }
+  .warn { color: #d9534f; }
+  button { margin-top: 10px; padding: 8px 12px; border-radius: 6px; border: 1px solid #ccc; cursor: pointer; }
 </style>
 </head>
 <body>
-<h2>バーコードスキャナ</h2>
-<video id="camera" autoplay playsinline></video>
-<p>スキャン結果: <span id="result">読み取り中...</span></p>
+  <h2>バーコードスキャナ（2種類のQRを順不同で読み取り）</h2>
 
-<script src="https://unpkg.com/@zxing/library@latest"></script>
-<script>
-const codeReader = new ZXing.BrowserMultiFormatReader();
+  <video id="camera" autoplay playsinline></video>
 
-// カメラ起動とバーコード解析
-codeReader.decodeFromVideoDevice(null, 'camera', (result, err) => {
-    if (result) {
-        document.getElementById('result').textContent = result.text;
+  <div class="row">
+    <span class="label">ID:</span>
+    <span id="idValue" class="value">未取得</span>
+  </div>
+  <div class="row">
+    <span class="label">試薬詳細：</span>
+    <span id="detailValue" class="value">未取得</span>
+  </div>
 
-        // ✅ Power Apps本番URL（新AppID使用）
-        const powerAppsUrl = "https://apps.powerapps.com/play/e/default-5c21876a-fce9-422b-a2f6-cab1ffba2f8e/a/611dff68-2994-4792-83e9-0abd5ec0f146?tenantId=5c21876a-fce9-422b-a2f6-cab1ffba2f8e&Barcode=" + encodeURIComponent(result.text);
+  <div id="status" class="hint">「担当者情報（nissuiid）」と「試薬情報（tkb）」のQRを読み取ってください。</div>
+  <button id="resetBtn" type="button">リセット</button>
 
-        // ✅ 読み取り後にPower Apps本番アプリを開く
-        setTimeout(() => {
-            window.location.href = powerAppsUrl;
-        }, 3000); // 3秒待機で結果確認しやすい
+  <script src="https://unpkg.com/@zxing/library@latest"></script>
+  <script>
+    const codeReader = new ZXing.BrowserMultiFormatReader();
+    const POWERAPPS_BASE =
+      "https://apps.powerapps.com/play/e/default-5c21876a-fce9-422b-a2f6-cab1ffba2f8e/a/611dff68-2994-4792-83e9-0abd5ec0f146?tenantId=5c21876a-fce9-422b-a2f6-cab1ffba2f8e";
+
+    // 取得状態
+    let gotId = null;            // 7桁ID
+    let gotName = null;          // 名前
+    let gotNissuiidFull = null;  // nissuiid のフルQR文字列
+    let gotDetail = null;        // tkb 値
+    let navigating = false;
+
+    const $id = document.getElementById('idValue');
+    const $detail = document.getElementById('detailValue');
+    const $status = document.getElementById('status');
+
+    function setStatus(msg, cls) {
+      $status.className = 'hint ' + (cls || '');
+      $status.textContent = msg;
     }
-});
-</script>
+
+    function updateUI() {
+      const displayId = gotId ? (gotName ? `${gotId} ： ${gotName}` : gotId) : '未取得';
+      $id.textContent = displayId;
+      $detail.textContent = gotDetail ?? '未取得';
+
+      if (gotId && gotDetail) {
+        setStatus('両方取得しました。3秒後にアプリへ遷移します。', 'ok');
+      } else if (gotId) {
+        setStatus('「試薬情報（tkb）」を含むQRを読み取ってください。', '');
+      } else if (gotDetail) {
+        setStatus('「担当者情報（nissuiid）」を含むQRを読み取ってください。', '');
+      } else {
+        setStatus('「担当者情報（nissuiid）」と「試薬情報（tkb）」を含むQRを読み取ってください。', '');
+      }
+    }
+
+    // 「'nissuiid,ID,メール,名前」形式をパース（先頭の'は任意）
+    function parseNissuiidRecord(raw) {
+      if (!raw) return null;
+      const m = raw.match(/^'?\s*nissuiid\s*,\s*([^,]+)\s*,\s*([^,]+)\s*,\s*(.+)\s*$/i);
+      if (!m) return null;
+      return { id: m[1], email: m[2], name: m[3] };
+    }
+
+    // ゆるく値を抽出（URLクエリ / key=value / JSON風 など）
+    function extractValue(raw, key) {
+      if (!raw) return null;
+      try {
+        const urlLike = raw.includes('?') ? raw : ('http://x/?' + raw);
+        const usp = new URL(urlLike).searchParams;
+        const qp = usp.get(key);
+        if (qp) return qp;
+      } catch (_) {}
+      const re = new RegExp(`${key}\\s*[:=,]\\s*([^\\s&,;]+)`, 'i');
+      const m = raw.match(re);
+      if (m && m[1]) return m[1];
+      const reJson = new RegExp(`["']?${key}["']?\\s*:\\s*["']([^"']+)["']`, 'i');
+      const m2 = raw.match(reJson);
+      if (m2 && m2[1]) return m2[1];
+      return raw;
+    }
+
+    function handle(text) {
+      const lower = text.toLowerCase();
+
+      if (lower.includes('nissuiid')) {
+        const rec = parseNissuiidRecord(text);
+        if (rec) {
+          gotId = rec.id;
+          gotName = rec.name;
+          gotNissuiidFull = text.replace(/^'\s*/, '').trim(); // フル文字列も保持
+        } else {
+          gotId = extractValue(text, 'nissuiid');
+          gotName = '';
+          gotNissuiidFull = text.trim();
+        }
+      } else if (lower.includes('tkb')) {
+        gotDetail = extractValue(text, 'tkb');
+      } else {
+        setStatus('このQRは「担当者情報」「試薬情報」を含みません。', 'warn');
+        return;
+      }
+
+      updateUI();
+
+      if (gotId && gotDetail && !navigating) {
+        navigating = true;
+        setTimeout(() => {
+          const url = POWERAPPS_BASE + '&' + new URLSearchParams({
+            nissuiid: gotId,                 // 7桁ID
+            nissuiidFull: gotNissuiidFull,   // フルQR文字列（新規）
+            tkb: gotDetail                   // 試薬情報
+          }).toString();
+          window.location.href = url; // PowerAppsへ遷移
+        }, 3000);
+      }
+    }
+
+    // 重複防止
+    let lastText = '';
+    let lastTime = 0;
+    const DEDUP_MS = 1200;
+
+    codeReader.decodeFromVideoDevice(null, 'camera', (result, err) => {
+      if (result && result.text) {
+        const now = Date.now();
+        if (result.text === lastText && now - lastTime < DEDUP_MS) return;
+        lastText = result.text;
+        lastTime = now;
+        handle(result.text);
+      }
+    }).catch(e => {
+      console.error(e);
+      setStatus('カメラの起動に失敗しました。ブラウザ権限とHTTPSを確認してください。', 'warn');
+    });
+
+    document.getElementById('resetBtn').addEventListener('click', () => {
+      gotId = null;
+      gotName = null;
+      gotNissuiidFull = null;
+      gotDetail = null;
+      navigating = false;
+      lastText = '';
+      lastTime = 0;
+      updateUI();
+      setStatus('リセットしました。読み取りを再開してください。', '');
+    });
+
+    updateUI();
+  </script>
 </body>
 </html>
 
