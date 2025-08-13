@@ -71,6 +71,15 @@
       }
     }
 
+    // 全角スペースや改行を適度に潰す（緩和のため）
+    function normalize(raw) {
+      if (!raw) return '';
+      return raw.replace(/\u3000/g, ' ')
+                .replace(/[\r\n\t]+/g, ' ')
+                .replace(/\s{2,}/g, ' ')
+                .trim();
+    }
+
     // 「'nissuiid,ID,メール,名前」形式をパース（先頭の'は任意）
     function parseNissuiidRecord(raw) {
       if (!raw) return null;
@@ -79,43 +88,119 @@
       return { id: m[1], email: m[2], name: m[3] };
     }
 
-    // ゆるく値を抽出（URLクエリ / key=value / JSON風 など）
+    // URL/CSV/JSON/自由テキストから key の値をゆるく抽出
     function extractValue(raw, key) {
       if (!raw) return null;
+      const text = normalize(raw);
+
+      // 1) URL/クエリ風
       try {
-        const urlLike = raw.includes('?') ? raw : ('http://x/?' + raw);
+        const urlLike = text.includes('?') ? text : ('http://x/?' + text);
         const usp = new URL(urlLike).searchParams;
         const qp = usp.get(key);
         if (qp) return qp;
       } catch (_) {}
-      const re = new RegExp(`${key}\\s*[:=,]\\s*([^\\s&,;]+)`, 'i');
-      const m = raw.match(re);
-      if (m && m[1]) return m[1];
+
+      // 2) key=val / key:val / key,val
+      const reKV = new RegExp(`(?:^|[\\s,&;])${key}\\s*[:=,]\\s*([^\\s,&;]+)`, 'i');
+      const mKV = text.match(reKV);
+      if (mKV && mKV[1]) return mKV[1];
+
+      // 3) JSON風 "key" : "val"
       const reJson = new RegExp(`["']?${key}["']?\\s*:\\s*["']([^"']+)["']`, 'i');
-      const m2 = raw.match(reJson);
-      if (m2 && m2[1]) return m2[1];
-      return raw;
+      const mJson = text.match(reJson);
+      if (mJson && mJson[1]) return mJson[1];
+
+      return null;
     }
 
-    function handle(text) {
-      const lower = text.toLowerCase();
+    // ▼▼ tkb用の緩和抽出（誤検出を抑制） ▼▼
+    function extractTKB(raw) {
+      if (!raw) return null;
+      const text = normalize(raw);
+      const RESERVED = /^(nissuiid|id|name|namae|email|mail)$/i;
 
-      if (lower.includes('nissuiid')) {
-        const rec = parseNissuiidRecord(text);
-        if (rec) {
-          gotId = rec.id;
-          gotName = rec.name;
-          gotNissuiidFull = text.replace(/^'\s*/, '').trim(); // フル文字列も保持
+      // A) 正攻法（tkb=... など）
+      const fromKey = extractValue(text, 'tkb');
+      if (fromKey) return fromKey;
+
+      // B) "TKBxxxx" / "TKB-xxxx" / "tkb_xxx"
+      const mTKBPrefix = text.match(/(?:^|[^\w])tkb[-_]?([A-Za-z0-9._\-]+)/i);
+      if (mTKBPrefix && mTKBPrefix[1]) return `TKB-${mTKBPrefix[1]}`;
+
+      // C) CSV先頭が tkb 値っぽい（7桁だけの数字・予約語は除外。4文字以上かつ数字を含む）
+      const firstToken = text.split(/[,\s]/).filter(Boolean)[0];
+      if (firstToken &&
+          !/^\d{7}$/.test(firstToken) &&
+          !RESERVED.test(firstToken) &&
+          /^(?=.*\d)[A-Za-z0-9._\-]{4,}$/.test(firstToken)) {
+        return firstToken;
+      }
+
+      // D) 値だけ入っているケース（全体が tkb 値）
+      if (!/^\d{7}$/.test(text) &&
+          /^(?=.*\d)[A-Za-z0-9._\-]{4,}$/.test(text) &&
+          !RESERVED.test(text)) {
+        return text;
+      }
+
+      return null;
+    }
+
+    // nissuiid の緩和抽出（キーなし7桁や URL/CSV/JSON からも拾う）
+    function extractNissuiId(raw) {
+      const text = normalize(raw);
+
+      // A) 正攻法（nissuiid=..., JSON, CSVのnissuiid）
+      const rec = parseNissuiidRecord(text);
+      if (rec) return { id: rec.id, name: rec.name, full: text.replace(/^'\s*/, '').trim() };
+
+      const idFromKey = extractValue(text, 'nissuiid');
+      if (idFromKey) return { id: idFromKey, name: '', full: text.trim() };
+
+      // B) "id=1234567" / "ID : 1234567"
+      const mIDKV = text.match(/(?:^|[^\w])id\s*[:=]\s*(\d{7})(?:\D|$)/i);
+      if (mIDKV) return { id: mIDKV[1], name: '', full: text.trim() };
+
+      // C) 値だけ 7桁数字
+      const m7 = text.match(/^\d{7}$/);
+      if (m7) return { id: m7[0], name: '', full: text.trim() };
+
+      return null;
+    }
+
+    function handle(inputText) {
+      const text = normalize(inputText);
+
+      // 1) まず nissuiid を試みる
+      const idInfo = extractNissuiId(text);
+
+      // 2) 次に tkb を緩和抽出
+      const tkbVal = extractTKB(text);
+
+      // 3) 既に取得済みは上書きしない（誤置換防止）
+      if (idInfo && !gotId) {
+        gotId = idInfo.id;
+        gotName = idInfo.name || gotName || '';
+        gotNissuiidFull = idInfo.full || text;
+      }
+      if (tkbVal && !gotDetail) {
+        gotDetail = tkbVal;
+      }
+
+      // 4) どちらも取れない場合のみヒューリスティック
+      if (!gotId && !gotDetail) {
+        if (/^\d{7}$/.test(text)) {
+          gotId = text;
+          gotName = gotName || '';
+          gotNissuiidFull = inputText.trim();
+        } else if (/^(?=.*\d)[A-Za-z0-9._\-]{4,}$/.test(text)) {
+          gotDetail = text;
         } else {
-          gotId = extractValue(text, 'nissuiid');
-          gotName = '';
-          gotNissuiidFull = text.trim();
+          setStatus('このQRは「担当者情報」「試薬情報」を特定できませんでした。別のQRを読み取ってください。', 'warn');
+          updateUI();
+          return;
         }
-      } else if (lower.includes('tkb')) {
-        gotDetail = extractValue(text, 'tkb');
-      } else {
-        setStatus('このQRは「担当者情報」「試薬情報」を含みません。', 'warn');
-        return;
       }
 
       updateUI();
@@ -125,7 +210,7 @@
         setTimeout(() => {
           const url = POWERAPPS_BASE + '&' + new URLSearchParams({
             nissuiid: gotId,                 // 7桁ID
-            nissuiidFull: gotNissuiidFull,   // フルQR文字列（新規）
+            nissuiidFull: gotNissuiidFull || '',   // フルQR文字列（新規/任意）
             tkb: gotDetail                   // 試薬情報
           }).toString();
           window.location.href = url; // PowerAppsへ遷移
