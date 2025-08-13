@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<title>Barcode Scanner (2種QR＋名前表示 CSV対応)</title>
+<style>
+  body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }
+  video { width: 100%; max-width: 420px; border: 2px solid #333; border-radius: 8px; margin-bottom: 10px; }
+  h2 { color: #444; }
+  .row { margin: 8px 0; font-size: 1.05rem; }
+  .label { color: #555; display: inline-block; min-width: 7em; text-align: right; margin-right: .5em; }
+  .value { font-weight: bold; color: #0078D7; word-break: break-all; }
+  .hint { font-size: .9rem; color: #666; margin-top: 8px; }
+  .ok { color: #0a8a0a; }
+  .warn { color: #d9534f; }
+  button { margin-top: 10px; padding: 8px 12px; border-radius: 6px; border: 1px solid #ccc; cursor: pointer; }
+</style>
+</head>
+<body>
+  <h2>バーコードスキャナ（2種類のQRを順不同で読み取り）</h2>
+
+  <video id="camera" autoplay playsinline></video>
+
+  <div class="row">
+    <span class="label">ID:</span>
+    <span id="idValue" class="value">未取得</span>
+  </div>
+  <div class="row">
+    <span class="label">試薬詳細：</span>
+    <span id="detailValue" class="value">未取得</span>
+  </div>
+
+  <div id="status" class="hint">「担当者情報（nissuiid）」と「試薬情報（tkb）」のQRを読み取ってください。</div>
+  <button id="resetBtn" type="button">リセット</button>
+
+  <script src="https://unpkg.com/@zxing/library@latest"></script>
+  <script>
+    const codeReader = new ZXing.BrowserMultiFormatReader();
+    const POWERAPPS_BASE =
+      "https://apps.powerapps.com/play/e/default-5c21876a-fce9-422b-a2f6-cab1ffba2f8e/a/611dff68-2994-4792-83e9-0abd5ec0f146?tenantId=5c21876a-fce9-422b-a2f6-cab1ffba2f8e";
+
+    // 取得状態
+    let gotId = null;            // 7桁ID
+    let gotName = null;          // 名前
+    let gotNissuiidFull = null;  // nissuiid のフルQR文字列
+    let gotDetail = null;        // tkb 値
+    let navigating = false;
+
+    const $id = document.getElementById('idValue');
+    const $detail = document.getElementById('detailValue');
+    const $status = document.getElementById('status');
+
+    function setStatus(msg, cls) {
+      $status.className = 'hint ' + (cls || '');
+      $status.textContent = msg;
+    }
+
+    function updateUI() {
+      const displayId = gotId ? (gotName ? `${gotId} ： ${gotName}` : gotId) : '未取得';
+      $id.textContent = displayId;
+      $detail.textContent = gotDetail ?? '未取得';
+
+      if (gotId && gotDetail) {
+        setStatus('両方取得しました。3秒後にアプリへ遷移します。', 'ok');
+      } else if (gotId) {
+        setStatus('「試薬情報（tkb）」を含むQRを読み取ってください。', '');
+      } else if (gotDetail) {
+        setStatus('「担当者情報（nissuiid）」を含むQRを読み取ってください。', '');
+      } else {
+        setStatus('「担当者情報（nissuiid）」と「試薬情報（tkb）」を含むQRを読み取ってください。', '');
+      }
+    }
+
+    // 全角スペースや改行を適度に潰す（緩和のため）
+    function normalize(raw) {
+      if (!raw) return '';
+      return raw.replace(/\u3000/g, ' ')
+                .replace(/[\r\n\t]+/g, ' ')
+                .replace(/\s{2,}/g, ' ')
+                .trim();
+    }
+
+    // 「'nissuiid,ID,メール,名前」形式をパース（先頭の'は任意）
+    function parseNissuiidRecord(raw) {
+      if (!raw) return null;
+      const m = raw.match(/^'?\s*nissuiid\s*,\s*([^,]+)\s*,\s*([^,]+)\s*,\s*(.+)\s*$/i);
+      if (!m) return null;
+      return { id: m[1], email: m[2], name: m[3] };
+    }
+
+    // URL/CSV/JSON/自由テキストから key の値をゆるく抽出
+    function extractValue(raw, key) {
+      if (!raw) return null;
+      const text = normalize(raw);
+
+      // 1) URL/クエリ風
+      try {
+        const urlLike = text.includes('?') ? text : ('http://x/?' + text);
+        const usp = new URL(urlLike).searchParams;
+        const qp = usp.get(key);
+        if (qp) return qp;
+      } catch (_) {}
+
+      // 2) key=val / key:val / key,val
+      const reKV = new RegExp(`(?:^|[\\s,&;])${key}\\s*[:=,]\\s*([^\\s,&;]+)`, 'i');
+      const mKV = text.match(reKV);
+      if (mKV && mKV[1]) return mKV[1];
+
+      // 3) JSON風 "key" : "val"
+      const reJson = new RegExp(`["']?${key}["']?\\s*:\\s*["']([^"']+)["']`, 'i');
+      const mJson = text.match(reJson);
+      if (mJson && mJson[1]) return mJson[1];
+
+      return null;
+    }
+
+    // ▼▼ tkb用の緩和抽出（誤検出を抑制） ▼▼
+    function extractTKB(raw) {
+      if (!raw) return null;
+      const text = normalize(raw);
+      const RESERVED = /^(nissuiid|id|name|namae|email|mail)$/i;
+
+      // A) 正攻法（tkb=... など）
+      const fromKey = extractValue(text, 'tkb');
+      if (fromKey) return fromKey;
+
+      // B) "TKBxxxx" / "TKB-xxxx" / "tkb_xxx"
+      const mTKBPrefix = text.match(/(?:^|[^\w])tkb[-_]?([A-Za-z0-9._\-]+)/i);
+      if (mTKBPrefix && mTKBPrefix[1]) return `TKB-${mTKBPrefix[1]}`;
+
+      // C) CSV先頭が tkb 値っぽい（7桁だけの数字・予約語は除外。4文字以上かつ数字を含む）
+      const firstToken = text.split(/[,\s]/).filter(Boolean)[0];
+      if (firstToken &&
+          !/^\d{7}$/.test(firstToken) &&
+          !RESERVED.test(firstToken) &&
+          /^(?=.*\d)[A-Za-z0-9._\-]{4,}$/.test(firstToken)) {
+        return firstToken;
+      }
+
+      // D) 値だけ入っているケース（全体が tkb 値）
+      if (!/^\d{7}$/.test(text) &&
+          /^(?=.*\d)[A-Za-z0-9._\-]{4,}$/.test(text) &&
+          !RESERVED.test(text)) {
+        return text;
+      }
+
+      return null;
+    }
+
+    // nissuiid の緩和抽出（キーなし7桁や URL/CSV/JSON からも拾う）
+    function extractNissuiId(raw) {
+      const text = normalize(raw);
+
+      // A) 正攻法（nissuiid=..., JSON, CSVのnissuiid）
+      const rec = parseNissuiidRecord(text);
+      if (rec) return { id: rec.id, name: rec.name, full: text.replace(/^'\s*/, '').trim() };
+
+      const idFromKey = extractValue(text, 'nissuiid');
+      if (idFromKey) return { id: idFromKey, name: '', full: text.trim() };
+
+      // B) "id=1234567" / "ID : 1234567"
+      const mIDKV = text.match(/(?:^|[^\w])id\s*[:=]\s*(\d{7})(?:\D|$)/i);
+      if (mIDKV) return { id: mIDKV[1], name: '', full: text.trim() };
+
+      // C) 値だけ 7桁数字
+      const m7 = text.match(/^\d{7}$/);
+      if (m7) return { id: m7[0], name: '', full: text.trim() };
+
+      return null;
+    }
+
+    function handle(inputText) {
+      const text = normalize(inputText);
+
+      // 1) まず nissuiid を試みる
+      const idInfo = extractNissuiId(text);
+
+      // 2) 次に tkb を緩和抽出
+      const tkbVal = extractTKB(text);
+
+      // 3) 既に取得済みは上書きしない（誤置換防止）
+      if (idInfo && !gotId) {
+        gotId = idInfo.id;
+        gotName = idInfo.name || gotName || '';
+        gotNissuiidFull = idInfo.full || text;
+      }
+      if (tkbVal && !gotDetail) {
+        gotDetail = tkbVal;
+      }
+
+      // 4) どちらも取れない場合のみヒューリスティック
+      if (!gotId && !gotDetail) {
+        if (/^\d{7}$/.test(text)) {
+          gotId = text;
+          gotName = gotName || '';
+          gotNissuiidFull = inputText.trim();
+        } else if (/^(?=.*\d)[A-Za-z0-9._\-]{4,}$/.test(text)) {
+          gotDetail = text;
+        } else {
+          setStatus('このQRは「担当者情報」「試薬情報」を特定できませんでした。別のQRを読み取ってください。', 'warn');
+          updateUI();
+          return;
+        }
+      }
+
+      updateUI();
+
+      if (gotId && gotDetail && !navigating) {
+        navigating = true;
+        setTimeout(() => {
+          const url = POWERAPPS_BASE + '&' + new URLSearchParams({
+            nissuiid: gotId,                 // 7桁ID
+            nissuiidFull: gotNissuiidFull || '',   // フルQR文字列（新規/任意）
+            tkb: gotDetail                   // 試薬情報
+          }).toString();
+          window.location.href = url; // PowerAppsへ遷移
+        }, 3000);
+      }
+    }
+
+    // 重複防止
+    let lastText = '';
+    let lastTime = 0;
+    const DEDUP_MS = 1200;
+
+    codeReader.decodeFromVideoDevice(null, 'camera', (result, err) => {
+      if (result && result.text) {
+        const now = Date.now();
+        if (result.text === lastText && now - lastTime < DEDUP_MS) return;
+        lastText = result.text;
+        lastTime = now;
+        handle(result.text);
+      }
+    }).catch(e => {
+      console.error(e);
+      setStatus('カメラの起動に失敗しました。ブラウザ権限とHTTPSを確認してください。', 'warn');
+    });
+
+    document.getElementById('resetBtn').addEventListener('click', () => {
+      gotId = null;
+      gotName = null;
+      gotNissuiidFull = null;
+      gotDetail = null;
+      navigating = false;
+      lastText = '';
+      lastTime = 0;
+      updateUI();
+      setStatus('リセットしました。読み取りを再開してください。', '');
+    });
+
+    updateUI();
+  </script>
+</body>
+</html>
